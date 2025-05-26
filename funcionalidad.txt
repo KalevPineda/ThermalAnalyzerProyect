@@ -1,0 +1,16 @@
+
+Correr el server:
+  python3 app.py 
+Endpoints de la API:
+  Streaming de Vídeo:
+    http://[tu_ip]:5000/ (Página HTML con el streaming)
+    http://[tu_ip]:5000/video_feed (El stream JPEG en vivo)
+  Conexión Remota:
+    Simplemente accede a http://[tu_ip]:5000 desde cualquier dispositivo en la misma red.
+  Descarga de Datos:
+    http://[tu_ip]:5000/download_data (Página HTML con lista de archivos para descargar)
+    http://[tu_ip]:5000/datasets/<filename> (Descarga directa de archivos .h5)
+    http://[tu_ip]:5000/images/<filename> (Visualización directa o descarga de imágenes .jpeg)
+  API para Datos Recientes (JSON):
+    http://[tu_ip]:5000/api/latest_data
+    http://[tu_ip]:5000/api/latest_rainbow_image (Para obtener la última imagen arcoíris)
