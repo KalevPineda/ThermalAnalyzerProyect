@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Streaming de Cámara IR</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+        h1 { color: #333; }
+        img { border: 2px solid #ccc; max-width: 100%; height: auto; display: block; margin: 20px auto; }
+        .footer-links { margin-top: 30px; }
+        .footer-links a { margin: 0 15px; text-decoration: none; color: #007bff; }
+    </style>
+</head>
+<body>
+    <h1>Streaming de Cámara IR Térmica (Filtro Arcoíris)</h1>
+    <img src="{{ url_for('video_feed') }}" alt="Thermal Camera Feed">
+    <div class="footer-links">
+        <p>Esta es la visualización en tiempo real con temperaturas min/max en el frame.</p>
+        <a href="/download_data">Descargar Datos e Imágenes Guardadas</a>
+    </div>
+</body>
+</html>

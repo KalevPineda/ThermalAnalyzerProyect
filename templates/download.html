@@ -1,0 +1,35 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Descarga de Datos Térmicos</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+        h1 { color: #333; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin-bottom: 10px; padding: 10px; border: 1px solid #eee; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
+        li a { text-decoration: none; color: #007bff; font-weight: bold; }
+        li span { color: #666; font-size: 0.9em; }
+        .back-link { margin-top: 30px; }
+        .back-link a { text-decoration: none; color: #007bff; }
+    </style>
+</head>
+<body>
+    <h1>Datos e Imágenes Térmicas Guardadas</h1>
+    <p>Haz clic en los enlaces para descargar o ver los archivos.</p>
+    <ul>
+        {% for file in files %}
+            <li>
+                <a href="{{ file.path }}" {% if file.type == 'dataset' %}download{% else %}target="_blank"{% endif %}>
+                    {{ file.name }}
+                </a>
+                <span>({{ file.type }})</span>
+            </li>
+        {% endfor %}
+    </ul>
+    <div class="back-link">
+        <a href="/">Volver al Streaming</a>
+    </div>
+</body>
+</html>
+
