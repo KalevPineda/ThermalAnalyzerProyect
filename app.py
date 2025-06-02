@@ -1,5 +1,3 @@
-
-
 # app.py
 from flask import Flask, Response, render_template, send_from_directory, jsonify
 import cv2
