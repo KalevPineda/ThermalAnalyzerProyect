@@ -1,5 +1,3 @@
-
-
 # thermal_utils.py
 import cv2
 import numpy as np
@@ -7,9 +5,9 @@ import os
 import datetime
 import h5py # Para guardar datasets
 import matplotlib.pyplot as plt
+import json # Para guardar datos de calibración
 
 # --- Configuración de la Cámara y Rango de Temperatura (pueden ser parámetros de funciones o globales) ---
-# Los definimos aquí para que las funciones los tengan a mano, pero podrían ser pasados como argumentos
 IR_IMAGE_HEIGHT = 192
 IR_IMAGE_WIDTH = 256
 MIN_TEMP_C = -20.0
@@ -18,16 +16,76 @@ MAX_TEMP_C = 200.0
 # --- Rutas de Carpetas ---
 DATASETS_FOLDER = 'DataSets'
 THERMAL_IMAGES_FOLDER = 'ThermalImages'
+CALIBRATION_FILE = 'calibration_data.json' # Nuevo archivo para datos de calibración
 
 # Asegurarse de que las carpetas existan
 os.makedirs(DATASETS_FOLDER, exist_ok=True)
 os.makedirs(THERMAL_IMAGES_FOLDER, exist_ok=True)
 
-# --- Función para Calcular la Matriz de Temperatura ---
+# --- Variables Globales para Calibración ---
+# Se cargarán al inicio si el archivo existe
+CALIBRATION_POINTS_PIXELS = None # e.g., [[x1, y1], [x2, y2], ...]
+CALIBRATION_POINTS_TEMPS = None # e.g., [temp1, temp2, ...]
+
+def load_calibration_data():
+    """
+    Carga los datos de calibración desde un archivo JSON.
+    """
+    global CALIBRATION_POINTS_PIXELS, CALIBRATION_POINTS_TEMPS
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, 'r') as f:
+                data = json.load(f)
+                CALIBRATION_POINTS_PIXELS = np.array(data['pixel_coords'])
+                CALIBRATION_POINTS_TEMPS = np.array(data['measured_temps'])
+            print(f"Datos de calibración cargados desde {CALIBRATION_FILE}")
+        except Exception as e:
+            print(f"Error al cargar datos de calibración: {e}")
+            CALIBRATION_POINTS_PIXELS = None
+            CALIBRATION_POINTS_TEMPS = None
+    else:
+        print("No se encontró el archivo de calibración. Ejecute temperatura_calibrator.py para calibrar.")
+        CALIBRATION_POINTS_PIXELS = None
+        CALIBRATION_POINTS_TEMPS = None
+
+# Cargar datos de calibración al importar el módulo
+load_calibration_data()
+
+# --- Función de Calibración ---
+def calibrate_temperature_frame(ir_gray_image_8bit, pixel_coords, measured_temps):
+    """
+    Calibra la matriz de temperatura basándose en puntos de referencia.
+    Utiliza una regresión lineal simple para mapear los valores de píxel a temperaturas reales.
+    Args:
+        ir_gray_image_8bit (np.array): Imagen IR en escala de grises (uint8).
+        pixel_coords (np.array): Array de coordenadas de los puntos de calibración [[x1, y1], [x2, y2], ...].
+        measured_temps (np.array): Array de temperaturas medidas en esos puntos [t1, t2, ...].
+    Returns:
+        tuple: (slope, intercept) de la regresión lineal.
+    """
+    if ir_gray_image_8bit.ndim == 3:
+        ir_gray_1_channel = ir_gray_image_8bit[:, :, 0]
+    else:
+        ir_gray_1_channel = ir_gray_image_8bit
+
+    # Extraer valores de píxel de los puntos de calibración
+    pixel_values_at_points = np.array([ir_gray_1_channel[y, x] for x, y in pixel_coords])
+
+    # Realizar regresión lineal simple: pixel_value -> measured_temp
+    # y = mx + b, donde y = measured_temp, x = pixel_value
+    try:
+        slope, intercept = np.polyfit(pixel_values_at_points, measured_temps, 1)
+        print(f"Calibración exitosa: Pendiente={slope:.4f}, Intercepto={intercept:.4f}")
+        return slope, intercept
+    except Exception as e:
+        print(f"Error en la calibración: {e}. Asegúrese de tener al menos 2 puntos válidos.")
+        return None, None
+
+# --- Función para Calcular la Matriz de Temperatura (MODIFICADA) ---
 def calculate_temperature_matrix(ir_gray_image_8bit):
     """
     Calcula la matriz de temperatura a partir de una imagen IR en escala de grises (uint8).
-    Asume que la imagen es (H, W, 3) con R=G=B o (H, W).
+    Ahora utiliza los datos de calibración si están disponibles.
     """
     if ir_gray_image_8bit.ndim == 3:
         ir_gray_1_channel = ir_gray_image_8bit[:, :, 0]
@@ -35,8 +93,25 @@ def calculate_temperature_matrix(ir_gray_image_8bit):
         ir_gray_1_channel = ir_gray_image_8bit
 
     pixel_values_float = ir_gray_1_channel.astype(np.float32)
-    temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
-    return temperature_matrix
+
+    if CALIBRATION_POINTS_PIXELS is not None and CALIBRATION_POINTS_TEMPS is not None:
+        # Si hay datos de calibración, usarlos para obtener la pendiente e intercepto
+        slope, intercept = calibrate_temperature_frame(ir_gray_image_8bit, CALIBRATION_POINTS_PIXELS, CALIBRATION_POINTS_TEMPS)
+        if slope is not None and intercept is not None:
+            temperature_matrix = (pixel_values_float * slope) + intercept
+            # Asegurarse de que los valores queden dentro del rango MIN/MAX_TEMP_C
+            temperature_matrix = np.clip(temperature_matrix, MIN_TEMP_C, MAX_TEMP_C)
+            return temperature_matrix
+        else:
+            print("No se pudo aplicar la calibración, usando el método lineal por defecto.")
+            # Fallback a la fórmula original si la calibración falla
+            temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
+            return temperature_matrix
+    else:
+        # Si no hay datos de calibración, usar la fórmula lineal por defecto
+        print("No hay datos de calibración disponibles, usando el método lineal por defecto.")
+        temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
+        return temperature_matrix
 
 # --- Función para aplicar paleta de colores arcoíris ---
 def apply_rainbow_colormap(temperature_matrix, vmin=MIN_TEMP_C, vmax=MAX_TEMP_C):
@@ -84,6 +159,9 @@ def save_data_as_dataset(temperature_matrix, ir_gray_image):
         f.attrs['max_temp_c'] = MAX_TEMP_C
         f.attrs['ir_image_height'] = IR_IMAGE_HEIGHT
         f.attrs['ir_image_width'] = IR_IMAGE_WIDTH
+        if CALIBRATION_POINTS_PIXELS is not None and CALIBRATION_POINTS_TEMPS is not None:
+            f.attrs['calibration_pixel_coords'] = CALIBRATION_POINTS_PIXELS.tolist()
+            f.attrs['calibration_measured_temps'] = CALIBRATION_POINTS_TEMPS.tolist()
         print(f"Dataset guardado: {filename}")
     return filename
 
@@ -165,5 +243,3 @@ def load_latest_rainbow_image_path():
     # Ordenar por fecha para obtener el más reciente
     rainbow_images.sort(key=lambda x: os.path.getmtime(os.path.join(THERMAL_IMAGES_FOLDER, x)), reverse=True)
     return os.path.join(THERMAL_IMAGES_FOLDER, rainbow_images[0])
-
-    
