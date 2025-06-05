@@ -3,89 +3,150 @@ import cv2
 import numpy as np
 import os
 import datetime
-import h5py # Para guardar datasets
+import h5py
 import matplotlib.pyplot as plt
-import json # Para guardar datos de calibración
+import json
 
-# --- Configuración de la Cámara y Rango de Temperatura (pueden ser parámetros de funciones o globales) ---
+# --- Configuración General ---
 IR_IMAGE_HEIGHT = 192
 IR_IMAGE_WIDTH = 256
 MIN_TEMP_C = -20.0
 MAX_TEMP_C = 200.0
 
-# --- Rutas de Carpetas ---
+# --- Rutas ---
 DATASETS_FOLDER = 'DataSets'
 THERMAL_IMAGES_FOLDER = 'ThermalImages'
-CALIBRATION_FILE = 'calibration_data.json' # Nuevo archivo para datos de calibración
+CALIBRATION_FILE = 'calibration_data.json'
 
-# Asegurarse de que las carpetas existan
 os.makedirs(DATASETS_FOLDER, exist_ok=True)
 os.makedirs(THERMAL_IMAGES_FOLDER, exist_ok=True)
 
-# --- Variables Globales para Calibración ---
-# Se cargarán al inicio si el archivo existe
-CALIBRATION_POINTS_PIXELS = None # e.g., [[x1, y1], [x2, y2], ...]
-CALIBRATION_POINTS_TEMPS = None # e.g., [temp1, temp2, ...]
+# --- Puntos de Calibración Fijos ---
+# Coordenadas de los 4 puntos en la imagen de 192x256
+CENTER_X = IR_IMAGE_WIDTH // 2
+CENTER_Y = IR_IMAGE_HEIGHT // 2
+RADIUS = 60 # Aumentado para mayor separación en 192x256
+CALIBRATION_POINTS_PIXEL_COORDS = np.array([
+    [CENTER_X, CENTER_Y],
+    [CENTER_X, int(CENTER_Y - RADIUS)],
+    [int(CENTER_X - RADIUS * np.cos(np.deg2rad(30))), int(CENTER_Y + RADIUS * np.sin(np.deg2rad(30)))],
+    [int(CENTER_X + RADIUS * np.cos(np.deg2rad(30))), int(CENTER_Y + RADIUS * np.sin(np.deg2rad(30)))]
+], dtype=int)
+
+# --- Variables Globales de Calibración NUC ---
+ALL_CALIBRATION_SAMPLES = []  # Lista para almacenar todas las muestras de calibración
+CALIBRATION_MODEL = None      # Almacenará los coeficientes del modelo polinomial
+CALIBRATION_DEGREE = 2        # Grado del polinomio para la calibración NUC
+
+def perform_nuc_calibration():
+    """
+    Realiza la calibración NUC usando todas las muestras acumuladas.
+    Calcula un modelo polinomial y lo almacena en CALIBRATION_MODEL.
+    """
+    global CALIBRATION_MODEL
+    if not ALL_CALIBRATION_SAMPLES:
+        print("No hay muestras de calibración para procesar.")
+        CALIBRATION_MODEL = None
+        return
+
+    all_pixel_values = []
+    all_measured_temps = []
+
+    # Recopilar todos los puntos de todas las muestras
+    for sample in ALL_CALIBRATION_SAMPLES:
+        all_pixel_values.extend(sample['pixel_values'])
+        all_measured_temps.extend(sample['measured_temps'])
+
+    # Se necesita al menos (grado + 1) puntos para el ajuste
+    if len(all_pixel_values) < CALIBRATION_DEGREE + 1:
+        print(f"No hay suficientes puntos ({len(all_pixel_values)}) para una calibración de grado {CALIBRATION_DEGREE}. Se necesitan al menos {CALIBRATION_DEGREE + 1}.")
+        CALIBRATION_MODEL = None
+        return
+
+    try:
+        # np.polyfit devuelve [p_n, p_{n-1}, ..., p_0] para p(x) = p_n*x^n + ... + p_0
+        model = np.polyfit(all_pixel_values, all_measured_temps, CALIBRATION_DEGREE)
+        CALIBRATION_MODEL = model
+        print(f"Calibración NUC (polinomial grado {CALIBRATION_DEGREE}) completada con {len(ALL_CALIBRATION_SAMPLES)} muestra(s) y {len(all_pixel_values)} puntos.")
+        print(f"Modelo: {CALIBRATION_MODEL}")
+    except Exception as e:
+        print(f"Error durante la calibración NUC: {e}")
+        CALIBRATION_MODEL = None
 
 def load_calibration_data():
     """
-    Carga los datos de calibración desde un archivo JSON.
+    Carga las muestras de calibración desde el archivo JSON y realiza la calibración.
     """
-    global CALIBRATION_POINTS_PIXELS, CALIBRATION_POINTS_TEMPS
+    global ALL_CALIBRATION_SAMPLES
     if os.path.exists(CALIBRATION_FILE):
         try:
             with open(CALIBRATION_FILE, 'r') as f:
                 data = json.load(f)
-                CALIBRATION_POINTS_PIXELS = np.array(data['pixel_coords'])
-                CALIBRATION_POINTS_TEMPS = np.array(data['measured_temps'])
-            print(f"Datos de calibración cargados desde {CALIBRATION_FILE}")
+                # La nueva estructura es una lista de muestras bajo la clave "samples"
+                ALL_CALIBRATION_SAMPLES = data.get('samples', [])
+            print(f"Cargadas {len(ALL_CALIBRATION_SAMPLES)} muestras de calibración desde {CALIBRATION_FILE}")
+            perform_nuc_calibration()
         except Exception as e:
             print(f"Error al cargar datos de calibración: {e}")
-            CALIBRATION_POINTS_PIXELS = None
-            CALIBRATION_POINTS_TEMPS = None
+            ALL_CALIBRATION_SAMPLES = []
+            perform_nuc_calibration()
     else:
-        print("No se encontró el archivo de calibración. Ejecute temperatura_calibrator.py para calibrar.")
-        CALIBRATION_POINTS_PIXELS = None
-        CALIBRATION_POINTS_TEMPS = None
+        print("No se encontró el archivo de calibración. El sistema usará la escala lineal por defecto.")
+        ALL_CALIBRATION_SAMPLES = []
+        perform_nuc_calibration()
 
-# Cargar datos de calibración al importar el módulo
+def add_calibration_sample(pixel_coords, pixel_values, measured_temps):
+    """
+    Añade una nueva muestra de calibración, la guarda en el archivo y recalibra.
+    """
+    global ALL_CALIBRATION_SAMPLES
+    new_sample = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "pixel_coords": pixel_coords.tolist(),
+        "pixel_values": pixel_values.tolist(),
+        "measured_temps": measured_temps
+    }
+    ALL_CALIBRATION_SAMPLES.append(new_sample)
+    
+    # Guardar todas las muestras en el archivo
+    try:
+        with open(CALIBRATION_FILE, 'w') as f:
+            json.dump({"samples": ALL_CALIBRATION_SAMPLES}, f, indent=4)
+        print(f"Nueva muestra de calibración añadida. Total: {len(ALL_CALIBRATION_SAMPLES)}.")
+        # Recalcular el modelo con la nueva información
+        perform_nuc_calibration()
+        return True
+    except Exception as e:
+        print(f"Error al guardar la nueva muestra de calibración: {e}")
+        ALL_CALIBRATION_SAMPLES.pop() # Revertir si falla el guardado
+        return False
+
+def clear_calibration_data():
+    """
+    Borra el archivo de calibración y resetea las variables globales.
+    """
+    global ALL_CALIBRATION_SAMPLES, CALIBRATION_MODEL
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            os.remove(CALIBRATION_FILE)
+            print(f"Archivo de calibración '{CALIBRATION_FILE}' borrado.")
+        except Exception as e:
+            print(f"Error al borrar el archivo de calibración: {e}")
+            return False
+    
+    ALL_CALIBRATION_SAMPLES = []
+    CALIBRATION_MODEL = None
+    print("Todos los datos de calibración han sido eliminados.")
+    return True
+
+
+# Cargar datos al iniciar
 load_calibration_data()
 
-# --- Función de Calibración ---
-def calibrate_temperature_frame(ir_gray_image_8bit, pixel_coords, measured_temps):
-    """
-    Calibra la matriz de temperatura basándose en puntos de referencia.
-    Utiliza una regresión lineal simple para mapear los valores de píxel a temperaturas reales.
-    Args:
-        ir_gray_image_8bit (np.array): Imagen IR en escala de grises (uint8).
-        pixel_coords (np.array): Array de coordenadas de los puntos de calibración [[x1, y1], [x2, y2], ...].
-        measured_temps (np.array): Array de temperaturas medidas en esos puntos [t1, t2, ...].
-    Returns:
-        tuple: (slope, intercept) de la regresión lineal.
-    """
-    if ir_gray_image_8bit.ndim == 3:
-        ir_gray_1_channel = ir_gray_image_8bit[:, :, 0]
-    else:
-        ir_gray_1_channel = ir_gray_image_8bit
-
-    # Extraer valores de píxel de los puntos de calibración
-    pixel_values_at_points = np.array([ir_gray_1_channel[y, x] for x, y in pixel_coords])
-
-    # Realizar regresión lineal simple: pixel_value -> measured_temp
-    # y = mx + b, donde y = measured_temp, x = pixel_value
-    try:
-        slope, intercept = np.polyfit(pixel_values_at_points, measured_temps, 1)
-        print(f"Calibración exitosa: Pendiente={slope:.4f}, Intercepto={intercept:.4f}")
-        return slope, intercept
-    except Exception as e:
-        print(f"Error en la calibración: {e}. Asegúrese de tener al menos 2 puntos válidos.")
-        return None, None
-
-# --- Función para Calcular la Matriz de Temperatura (MODIFICADA) ---
 def calculate_temperature_matrix(ir_gray_image_8bit):
     """
-    Calcula la matriz de temperatura a partir de una imagen IR en escala de grises (uint8).
-    Ahora utiliza los datos de calibración si están disponibles.
+    Calcula la matriz de temperatura a partir de una imagen IR.
+    Utiliza el modelo de calibración NUC si está disponible, si no, una escala lineal.
     """
     if ir_gray_image_8bit.ndim == 3:
         ir_gray_1_channel = ir_gray_image_8bit[:, :, 0]
@@ -94,152 +155,74 @@ def calculate_temperature_matrix(ir_gray_image_8bit):
 
     pixel_values_float = ir_gray_1_channel.astype(np.float32)
 
-    if CALIBRATION_POINTS_PIXELS is not None and CALIBRATION_POINTS_TEMPS is not None:
-        # Si hay datos de calibración, usarlos para obtener la pendiente e intercepto
-        slope, intercept = calibrate_temperature_frame(ir_gray_image_8bit, CALIBRATION_POINTS_PIXELS, CALIBRATION_POINTS_TEMPS)
-        if slope is not None and intercept is not None:
-            temperature_matrix = (pixel_values_float * slope) + intercept
-            # Asegurarse de que los valores queden dentro del rango MIN/MAX_TEMP_C
-            temperature_matrix = np.clip(temperature_matrix, MIN_TEMP_C, MAX_TEMP_C)
-            return temperature_matrix
-        else:
-            print("No se pudo aplicar la calibración, usando el método lineal por defecto.")
-            # Fallback a la fórmula original si la calibración falla
-            temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
-            return temperature_matrix
+    if CALIBRATION_MODEL is not None:
+        # Aplicar el modelo polinomial (NUC)
+        temperature_matrix = np.polyval(CALIBRATION_MODEL, pixel_values_float)
     else:
-        # Si no hay datos de calibración, usar la fórmula lineal por defecto
-        print("No hay datos de calibración disponibles, usando el método lineal por defecto.")
+        # Fallback: Usar la fórmula lineal por defecto si no hay calibración
         temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
-        return temperature_matrix
 
-# --- Función para aplicar paleta de colores arcoíris ---
+    # Asegurar que los valores queden dentro del rango global
+    temperature_matrix = np.clip(temperature_matrix, MIN_TEMP_C, MAX_TEMP_C)
+    return temperature_matrix
+
+# --- El resto de las funciones de utilidad permanecen sin cambios significativos ---
+
 def apply_rainbow_colormap(temperature_matrix, vmin=MIN_TEMP_C, vmax=MAX_TEMP_C):
-    """
-    Aplica una paleta de colores arcoíris (JET o similar) a la matriz de temperatura.
-    Retorna una imagen BGR uint8.
-    """
-    # Normalizar la matriz de temperatura al rango 0-255
-    normalized_temp = ((temperature_matrix - vmin) / (vmax - vmin) * 255).astype(np.uint8)
-
-    # Aplicar un colormap común en cámaras térmicas (JET en matplotlib es similar a arcoíris)
-    # Matplotlib genera RGBA, necesitamos convertir a BGR para OpenCV
-    cmap = plt.get_cmap('jet') # Puedes probar 'viridis', 'inferno', 'magma', 'plasma'
-    colored_image_rgba = cmap(normalized_temp)
-    colored_image_bgr = (colored_image_rgba[:, :, :3] * 255).astype(np.uint8) # Quitar alfa y convertir a BGR
-    colored_image_bgr = cv2.cvtColor(colored_image_bgr, cv2.COLOR_RGB2BGR) # Convertir de RGB (matplotlib) a BGR (OpenCV)
-
+    normalized_temp = np.clip((temperature_matrix - vmin) / (vmax - vmin), 0, 1)
+    normalized_temp_uint8 = (normalized_temp * 255).astype(np.uint8)
+    cmap = plt.get_cmap('jet')
+    colored_image_rgba = cmap(normalized_temp_uint8)
+    colored_image_bgr = cv2.cvtColor((colored_image_rgba[:, :, :3] * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     return colored_image_bgr
 
-# --- Función para guardar dataset ---
 def save_data_as_dataset(temperature_matrix, ir_gray_image):
-    """
-    Guarda las matrices de temperatura y la imagen IR (convertida a float32)
-    en un archivo HDF5 con marca de tiempo.
-    """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(DATASETS_FOLDER, f"thermal_data_{timestamp}.h5")
-
-    # Convertir ir_gray_image a float32 si no lo está ya
-    # Asumimos que ir_gray_image es (H,W,3) con R=G=B o (H,W)
-    if ir_gray_image.dtype != np.float32:
-        if ir_gray_image.ndim == 3:
-            ir_gray_image_float = ir_gray_image[:, :, 0].astype(np.float32) # Tomar un canal y float32
-        else:
-            ir_gray_image_float = ir_gray_image.astype(np.float32)
+    if ir_gray_image.ndim == 3:
+        ir_gray_image_float = ir_gray_image[:, :, 0].astype(np.float32)
     else:
-        ir_gray_image_float = ir_gray_image
-
+        ir_gray_image_float = ir_gray_image.astype(np.float32)
     with h5py.File(filename, 'w') as f:
         f.create_dataset('temperature_matrix', data=temperature_matrix)
         f.create_dataset('ir_gray_image_float', data=ir_gray_image_float)
-        # Opcional: guardar metadatos
         f.attrs['timestamp'] = timestamp
-        f.attrs['min_temp_c'] = MIN_TEMP_C
-        f.attrs['max_temp_c'] = MAX_TEMP_C
-        f.attrs['ir_image_height'] = IR_IMAGE_HEIGHT
-        f.attrs['ir_image_width'] = IR_IMAGE_WIDTH
-        if CALIBRATION_POINTS_PIXELS is not None and CALIBRATION_POINTS_TEMPS is not None:
-            f.attrs['calibration_pixel_coords'] = CALIBRATION_POINTS_PIXELS.tolist()
-            f.attrs['calibration_measured_temps'] = CALIBRATION_POINTS_TEMPS.tolist()
-        print(f"Dataset guardado: {filename}")
+        f.attrs['calibration_model'] = json.dumps(CALIBRATION_MODEL.tolist() if CALIBRATION_MODEL is not None else None)
+    print(f"Dataset guardado: {filename}")
     return filename
 
-# --- Función para guardar imágenes ---
 def save_img(ir_gray_image, min_temp_detected=None, max_temp_detected=None):
-    """
-    Guarda la imagen IR en escala de grises y una versión con filtro arcoíris.
-    """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # --- Guardar imagen IR en escala de grises original (uint8) ---
-    # Asegurarse de que sea de 1 canal para guardar como JPEG en escala de grises
     if ir_gray_image.ndim == 3:
         gray_output_image = cv2.cvtColor(ir_gray_image, cv2.COLOR_BGR2GRAY)
     else:
-        gray_output_image = ir_gray_image # Ya es de 1 canal
-
+        gray_output_image = ir_gray_image
     gray_filename = os.path.join(THERMAL_IMAGES_FOLDER, f"ir_gray_{timestamp}.jpeg")
     cv2.imwrite(gray_filename, gray_output_image)
-    print(f"Imagen IR gris guardada: {gray_filename}")
-
-    # --- Guardar imagen con filtro arcoíris ---
-    # Primero calcular la matriz de temperatura
+    
     temperature_matrix = calculate_temperature_matrix(ir_gray_image)
-    
-    # Si no se proporcionan, calcular min/max de la matriz de temperatura actual
-    if min_temp_detected is None:
-        min_temp_detected = np.min(temperature_matrix)
-    if max_temp_detected is None:
-        max_temp_detected = np.max(temperature_matrix)
-
-    # Aplicar el colormap
+    if min_temp_detected is None: min_temp_detected = np.min(temperature_matrix)
+    if max_temp_detected is None: max_temp_detected = np.max(temperature_matrix)
     colored_image = apply_rainbow_colormap(temperature_matrix, vmin=MIN_TEMP_C, vmax=MAX_TEMP_C)
-    
-    # Asegurarse de que los valores de temperatura en el nombre no tengan demasiados decimales
     min_temp_str = f"{min_temp_detected:.1f}".replace('.', '_')
     max_temp_str = f"{max_temp_detected:.1f}".replace('.', '_')
-
-    colored_filename = os.path.join(THERMAL_IMAGES_FOLDER,
-                                   f"ir_rainbow_{timestamp}_min{min_temp_str}_max{max_temp_str}.jpeg")
+    colored_filename = os.path.join(THERMAL_IMAGES_FOLDER, f"ir_rainbow_{timestamp}_min{min_temp_str}_max{max_temp_str}.jpeg")
     cv2.imwrite(colored_filename, colored_image)
-    print(f"Imagen IR arcoíris guardada: {colored_filename}")
-
+    print(f"Imágenes guardadas: {gray_filename}, {colored_filename}")
     return gray_filename, colored_filename
 
-# --- Función para leer el último dataset guardado ---
 def load_latest_dataset():
-    """
-    Carga el dataset HDF5 más reciente de la carpeta DataSets.
-    """
-    list_of_files = os.listdir(DATASETS_FOLDER)
-    h5_files = [f for f in list_of_files if f.endswith('.h5')]
-    if not h5_files:
-        return None, None, "No se encontraron archivos .h5 en la carpeta DataSets."
-
-    # Ordenar por fecha para obtener el más reciente
-    h5_files.sort(key=lambda x: os.path.getmtime(os.path.join(DATASETS_FOLDER, x)), reverse=True)
-    latest_file = os.path.join(DATASETS_FOLDER, h5_files[0])
-
+    list_of_files = [f for f in os.listdir(DATASETS_FOLDER) if f.endswith('.h5')]
+    if not list_of_files: return None, None, "No se encontraron archivos .h5"
+    latest_file = max(list_of_files, key=lambda x: os.path.getmtime(os.path.join(DATASETS_FOLDER, x)))
     try:
-        with h5py.File(latest_file, 'r') as f:
-            temperature_matrix = f['temperature_matrix'][()]
-            ir_gray_image_float = f['ir_gray_image_float'][()]
-        print(f"Dataset cargado: {latest_file}")
-        return temperature_matrix, ir_gray_image_float, None
+        with h5py.File(os.path.join(DATASETS_FOLDER, latest_file), 'r') as f:
+            return f['temperature_matrix'][()], f['ir_gray_image_float'][()], None
     except Exception as e:
-        return None, None, f"Error al cargar el dataset {latest_file}: {e}"
+        return None, None, f"Error al cargar {latest_file}: {e}"
 
-# --- Función para leer la última imagen arcoíris guardada ---
 def load_latest_rainbow_image_path():
-    """
-    Retorna la ruta del archivo de imagen arcoíris más reciente.
-    """
-    list_of_files = os.listdir(THERMAL_IMAGES_FOLDER)
-    rainbow_images = [f for f in list_of_files if f.startswith('ir_rainbow_') and f.endswith('.jpeg')]
-    if not rainbow_images:
-        return None
-
-    # Ordenar por fecha para obtener el más reciente
-    rainbow_images.sort(key=lambda x: os.path.getmtime(os.path.join(THERMAL_IMAGES_FOLDER, x)), reverse=True)
-    return os.path.join(THERMAL_IMAGES_FOLDER, rainbow_images[0])
+    list_of_files = [f for f in os.listdir(THERMAL_IMAGES_FOLDER) if f.startswith('ir_rainbow_') and f.endswith('.jpeg')]
+    if not list_of_files: return None
+    latest_file = max(list_of_files, key=lambda x: os.path.getmtime(os.path.join(THERMAL_IMAGES_FOLDER, x)))
+    return os.path.join(THERMAL_IMAGES_FOLDER, latest_file)

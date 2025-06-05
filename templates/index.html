@@ -1,21 +1,242 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-    <title>Streaming de Cámara IR</title>
+    <meta charset="UTF-8">
+    <title>Streaming y Calibración de Cámara IR</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-        h1 { color: #333; }
-        img { border: 2px solid #ccc; max-width: 100%; height: auto; display: block; margin: 20px auto; }
-        .footer-links { margin-top: 30px; }
-        .footer-links a { margin: 0 15px; text-decoration: none; color: #007bff; }
+        :root {
+            --primary-color: #007bff;
+            --secondary-color: #6c757d;
+            --bg-color: #f8f9fa;
+            --text-color: #333;
+            --card-bg: #fff;
+            --border-color: #dee2e6;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            text-align: center; 
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        .header {
+            background-color: var(--card-bg);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: var(--primary-color);
+        }
+        .main-container {
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .video-container {
+            position: relative;
+            display: inline-block;
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            background-color: #000;
+        }
+        img { 
+            max-width: 100%; 
+            height: auto; 
+            display: block; 
+        }
+        .controls, .calibration-panel {
+            background-color: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+            text-align: left;
+            border: 1px solid var(--border-color);
+        }
+        h2 {
+            margin-top: 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            background-color: var(--primary-color);
+            cursor: pointer;
+            font-size: 1rem;
+            text-decoration: none;
+            display: inline-block;
+            margin: 5px;
+            transition: background-color 0.2s;
+        }
+        .btn:hover { background-color: #0056b3; }
+        .btn-secondary { background-color: var(--secondary-color); }
+        .btn-secondary:hover { background-color: #545b62; }
+        .btn-danger { background-color: #dc3545; }
+        .btn-danger:hover { background-color: #c82333; }
+        #calibration-panel { display: none; }
+        .input-group { display: flex; align-items: center; margin-bottom: 1rem; }
+        .input-group label { margin-right: 10px; min-width: 60px; }
+        .input-group input { flex-grow: 1; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 1rem;
+            font-weight: bold;
+        }
+        .status.success { background-color: #d4edda; color: #155724; }
+        .status.error { background-color: #f8d7da; color: #721c24; }
     </style>
 </head>
 <body>
-    <!--<h1>Streaming de Cámara IR Térmica (Filtro Arcoíris)</h1> -->
-    <img src="{{ url_for('video_feed') }}" alt="Thermal Camera Feed">
-    <div class="footer-links">
-        <p>Esta es la visualización en tiempo real con temperaturas min/max en el frame.</p>
-        <a href="/download_data">Descargar Datos e Imágenes Guardadas</a>
-    </div>
+
+    <header class="header">
+        <h1>Monitor Térmico IR</h1>
+        <a href="/download_data" class="btn btn-secondary">Ver Archivos Guardados</a>
+    </header>
+
+    <main class="main-container">
+        <div class="video-container">
+            <img src="{{ url_for('video_feed') }}" alt="Thermal Camera Feed">
+        </div>
+
+        <div class="controls">
+            <h2>Panel de Control</h2>
+            <button id="toggle-calibration-btn" class="btn">Mostrar Panel de Calibración</button>
+            <p id="calibration-status" style="margin-top: 1rem;">Estado: Cargando...</p>
+        </div>
+
+        <div id="calibration-panel" class="calibration-panel">
+            <h2>Calibración NUC Multipunto</h2>
+            <p>Ajusta la precisión de la cámara añadiendo puntos de referencia medidos con un termopar externo.</p>
+            <button id="toggle-markers-btn" class="btn btn-secondary">Mostrar/Ocultar Puntos en Video</button>
+            <hr style="margin: 1.5rem 0;">
+            
+            <h4>Añadir Nueva Muestra de Calibración</h4>
+            <div id="temp-inputs">
+                <div class="input-group">
+                    <label for="p1">Temp P1:</label>
+                    <input type="number" step="0.1" id="p1" placeholder="ej: 25.3">
+                </div>
+                <div class="input-group">
+                    <label for="p2">Temp P2:</label>
+                    <input type="number" step="0.1" id="p2" placeholder="ej: 25.1">
+                </div>
+                <div class="input-group">
+                    <label for="p3">Temp P3:</label>
+                    <input type="number" step="0.1" id="p3" placeholder="ej: 24.9">
+                </div>
+                <div class="input-group">
+                    <label for="p4">Temp P4:</label>
+                    <input type="number" step="0.1" id="p4" placeholder="ej: 25.0">
+                </div>
+            </div>
+            <button id="add-sample-btn" class="btn">Añadir Muestra</button>
+            <hr style="margin: 1.5rem 0;">
+
+            <h4>Gestión de Datos</h4>
+            <button id="clear-calibration-btn" class="btn btn-danger">Borrar Toda la Calibración</button>
+            <div id="api-response" class="status" style="display:none;"></div>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const toggleCalibrationBtn = document.getElementById('toggle-calibration-btn');
+            const calibrationPanel = document.getElementById('calibration-panel');
+            const toggleMarkersBtn = document.getElementById('toggle-markers-btn');
+            const addSampleBtn = document.getElementById('add-sample-btn');
+            const clearCalibrationBtn = document.getElementById('clear-calibration-btn');
+            const calibrationStatusEl = document.getElementById('calibration-status');
+            const apiResponseEl = document.getElementById('api-response');
+
+            function updateCalibrationStatus() {
+                fetch('/api/calibration_status')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            calibrationStatusEl.textContent = `Estado Actual: ${data.message}`;
+                        }
+                    });
+            }
+
+            function showApiResponse(message, type) {
+                apiResponseEl.textContent = message;
+                apiResponseEl.className = `status ${type}`;
+                apiResponseEl.style.display = 'block';
+                setTimeout(() => { apiResponseEl.style.display = 'none'; }, 5000);
+            }
+
+            toggleCalibrationBtn.addEventListener('click', () => {
+                const isHidden = calibrationPanel.style.display === 'none' || calibrationPanel.style.display === '';
+                calibrationPanel.style.display = isHidden ? 'block' : 'none';
+                toggleCalibrationBtn.textContent = isHidden ? 'Ocultar Panel de Calibración' : 'Mostrar Panel de Calibración';
+            });
+
+            toggleMarkersBtn.addEventListener('click', () => {
+                fetch('/api/toggle_calibration_markers', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        const action = data.showing_markers ? 'mostrando' : 'ocultando';
+                        showApiResponse(`Puntos de calibración se están ${action} en el video.`, 'success');
+                    });
+            });
+
+            addSampleBtn.addEventListener('click', () => {
+                const temps = [
+                    document.getElementById('p1').value,
+                    document.getElementById('p2').value,
+                    document.getElementById('p3').value,
+                    document.getElementById('p4').value
+                ];
+                
+                if (temps.some(t => t === '')) {
+                    showApiResponse('Por favor, rellena las 4 temperaturas.', 'error');
+                    return;
+                }
+
+                fetch('/api/add_calibration_sample', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ temps: temps.map(Number) })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    showApiResponse(data.message, data.status);
+                    if (data.status === 'success') {
+                        updateCalibrationStatus();
+                        // Limpiar campos
+                        temps.forEach((_, i) => document.getElementById(`p${i+1}`).value = '');
+                    }
+                });
+            });
+
+            clearCalibrationBtn.addEventListener('click', () => {
+                if (confirm('¿Estás seguro de que quieres borrar TODOS los datos de calibración? Esta acción no se puede deshacer.')) {
+                    fetch('/api/clear_calibration', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        showApiResponse(data.message, data.status);
+                        if (data.status === 'success') {
+                            updateCalibrationStatus();
+                        }
+                    });
+                }
+            });
+
+            // Actualizar estado al cargar la página y periódicamente
+            updateCalibrationStatus();
+            setInterval(updateCalibrationStatus, 10000); // Cada 10 segundos
+        });
+    </script>
 </body>
 </html>

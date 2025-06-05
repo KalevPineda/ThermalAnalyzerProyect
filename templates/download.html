@@ -1,35 +1,125 @@
-
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
+    <meta charset="UTF-8">
     <title>Descarga de Datos Térmicos</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-        h1 { color: #333; }
-        ul { list-style-type: none; padding: 0; }
-        li { margin-bottom: 10px; padding: 10px; border: 1px solid #eee; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
-        li a { text-decoration: none; color: #007bff; font-weight: bold; }
-        li span { color: #666; font-size: 0.9em; }
-        .back-link { margin-top: 30px; }
-        .back-link a { text-decoration: none; color: #007bff; }
+        :root {
+            --primary-color: #007bff;
+            --bg-color: #f8f9fa;
+            --text-color: #333;
+            --card-bg: #fff;
+            --border-color: #dee2e6;
+            --header-bg: #f1f1f1;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        .header {
+            background-color: var(--card-bg);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .header h1 {
+            margin: 0;
+            text-align: center;
+            font-size: 1.8rem;
+            color: var(--primary-color);
+        }
+        .container {
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        thead th {
+            background-color: var(--header-bg);
+            font-weight: bold;
+        }
+        tbody tr:hover {
+            background-color: #f1f1f1;
+        }
+        a {
+            text-decoration: none;
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .file-type {
+            font-style: italic;
+            color: #666;
+        }
+        .back-link { 
+            margin-top: 2rem; 
+            text-align: center;
+        }
+        .back-link a {
+            padding: 0.75rem 1.5rem;
+            border-radius: 5px;
+            color: white;
+            background-color: var(--primary-color);
+            text-decoration: none;
+        }
     </style>
 </head>
 <body>
-    <h1>Datos e Imágenes Térmicas Guardadas</h1>
-    <p>Haz clic en los enlaces para descargar o ver los archivos.</p>
-    <ul>
-        {% for file in files %}
-            <li>
-                <a href="{{ file.path }}" {% if file.type == 'dataset' %}download{% else %}target="_blank"{% endif %}>
-                    {{ file.name }}
-                </a>
-                <span>({{ file.type }})</span>
-            </li>
-        {% endfor %}
-    </ul>
-    <div class="back-link">
-        <a href="/">Volver al Streaming</a>
+    <header class="header">
+        <h1>Archivos Térmicos Guardados</h1>
+    </header>
+
+    <div class="container">
+        <p>Aquí puedes ver y descargar todos los datasets e imágenes generados por el sistema.</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Nombre del Archivo</th>
+                    <th>Tipo</th>
+                    <th>Acción</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if files %}
+                    {% for file in files %}
+                    <tr>
+                        <td>{{ file.name }}</td>
+                        <td class="file-type">{{ file.type }}</td>
+                        <td>
+                            <a href="{{ file.path }}" 
+                               {% if 'Dataset' in file.type %}download{% else %}target="_blank"{% endif %}>
+                                {% if 'Dataset' in file.type %}Descargar{% else %}Ver{% endif %}
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="3" style="text-align: center; padding: 2rem;">No hay archivos guardados todavía.</td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+
+        <div class="back-link">
+            <a href="/">Volver al Streaming en Vivo</a>
+        </div>
     </div>
 </body>
 </html>
-

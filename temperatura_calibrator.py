@@ -1,124 +1,139 @@
 # temperatura_calibrator.py
 import cv2
 import numpy as np
-import os
-import json
 import thermal_utils # Importar nuestro módulo de utilidades térmicas
 
 # --- Configuración de la Cámara ---
-CAMERA_INDEX = 2 # Asegúrate de que este índice sea el correcto para tu cámara térmica
+# ASEGÚRATE DE QUE ESTE ÍNDICE SEA EL CORRECTO PARA TU CÁMARA TÉRMICA
+CAMERA_INDEX = 2
 CAP = None
 
-# --- Puntos de Calibración ---
-# Coordenadas de los 4 puntos en la imagen de 192x156 (aproximadas, ajustar si es necesario)
-# Centro: IR_IMAGE_WIDTH // 2, IR_IMAGE_HEIGHT // 2
-# Triángulo equilátero alrededor del centro. Distancia de 20 píxeles del centro.
-# (Recuerda que la imagen de ejemplo es 192x156, la cámara es 192x256. Adaptar.)
-# Si la imagen IR es de 192 de alto y 256 de ancho:
-CENTER_X = thermal_utils.IR_IMAGE_WIDTH // 2
-CENTER_Y = thermal_utils.IR_IMAGE_HEIGHT // 2
-RADIUS = 40 # Distancia de los puntos periféricos al centro, ajusta según sea necesario para tu setup
-
-# Coordenadas de los 4 puntos:
-# 1. Punto central
-# 2. Punto superior
-# 3. Punto inferior-izquierdo
-# 4. Punto inferior-derecho
-
-# Usando trigonometría para un triángulo equilátero
-# Ángulos: 90 grados (arriba), 210 grados (abajo-izquierda), 330 grados (abajo-derecha)
-# Estos son los ángulos si el punto de arriba es 0 grados (eje Y negativo)
-# O si es más intuitivo, 90 grados (arriba), 90+120=210, 90+240=330
-
-CALIBRATION_POINTS_PIXEL_COORDS = np.array([
-    [CENTER_X, CENTER_Y], # Centro
-    [CENTER_X, int(CENTER_Y - RADIUS)], # Arriba
-    [int(CENTER_X - RADIUS * np.cos(np.deg2rad(30))), int(CENTER_Y + RADIUS * np.sin(np.deg2rad(30)))], # Abajo-izquierda
-    [int(CENTER_X + RADIUS * np.cos(np.deg2rad(30))), int(CENTER_Y + RADIUS * np.sin(np.deg2rad(30)))]  # Abajo-derecha
-], dtype=int)
-
-
 def init_camera():
+    """Inicializa y abre la conexión con la cámara."""
     global CAP
     if CAP is None or not CAP.isOpened():
         print(f"Intentando abrir la cámara con índice {CAMERA_INDEX}...")
         CAP = cv2.VideoCapture(CAMERA_INDEX)
         if not CAP.isOpened():
-            print("Error: No se pudo abrir la cámara. Asegúrate de que el índice sea correcto.")
+            print(f"Error: No se pudo abrir la cámara con índice {CAMERA_INDEX}.")
+            print("Verifica que la cámara esté conectada y que el índice sea el correcto.")
             return False
-        else:
-            # Establecer resolución si es necesario (algunas cámaras lo permiten)
-            # CAP.set(cv2.CAP_PROP_FRAME_WIDTH, thermal_utils.IR_IMAGE_WIDTH)
-            # CAP.set(cv2.CAP_PROP_FRAME_HEIGHT, thermal_utils.IR_IMAGE_HEIGHT)
-            print("Cámara abierta correctamente.")
-            return True
+        print("Cámara abierta correctamente.")
     return True
 
-def capture_and_display():
+def draw_calibration_points(frame):
+    """Dibuja los puntos de calibración sobre un frame."""
+    display_frame = frame.copy()
+    for i, (x, y) in enumerate(thermal_utils.CALIBRATION_POINTS_PIXEL_COORDS):
+        cv2.circle(display_frame, (x, y), 5, (0, 255, 0), -1) # Círculo verde relleno
+        cv2.putText(display_frame, f"P{i+1}", (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    return display_frame
+
+def get_1_channel_gray(frame_raw):
+    """Asegura que la imagen de entrada sea de 1 canal en escala de grises."""
+    if frame_raw.ndim == 3 and frame_raw.shape[2] == 3:
+        return cv2.cvtColor(frame_raw, cv2.COLOR_BGR2GRAY)
+    return frame_raw
+
+def get_3_channel_bgr(frame_raw):
+    """Asegura que la imagen de entrada sea de 3 canales BGR para dibujar."""
+    if frame_raw.ndim == 1 or (frame_raw.ndim == 2):
+        return cv2.cvtColor(frame_raw, cv2.COLOR_GRAY2BGR)
+    return frame_raw
+
+def capture_calibration_samples():
+    """
+    Función principal que guía al usuario para capturar una o más muestras de calibración.
+    """
     if not init_camera():
-        print("No se pudo iniciar la cámara. Saliendo.")
         return
 
-    measured_temperatures = [0.0] * 4 # Para almacenar las temperaturas ingresadas por el usuario
+    collected_samples = []
 
-    print("\n--- Modo de Calibración de Temperatura ---")
-    print("Coloca tus termopares en los 4 puntos marcados en la pantalla.")
-    print("Presiona 's' para guardar las temperaturas y calibrar.")
-    print("Presiona 'q' para salir sin guardar.")
-
+    print("\n--- Asistente de Calibración Inicial ---")
+    
     while True:
-        ret, frame = CAP.read()
-        if not ret:
-            print("Error al leer el fotograma. Reconectando...")
-            CAP.release()
-            init_camera()
-            continue
+        print("\n--- Preparando para Capturar Nueva Muestra ---")
+        print("1. Coloca tus termopares en las posiciones marcadas en verde.")
+        print("2. Enfoca la ventana de video y presiona 's' para capturar y congelar la imagen.")
+        print("3. Presiona 'q' para finalizar el asistente.")
 
-        # Recortar la región de interés si la cámara captura un frame más grande
-        ir_gray_image = frame[0:thermal_utils.IR_IMAGE_HEIGHT, 0:thermal_utils.IR_IMAGE_WIDTH]
+        captured_ir_gray_image = None
+        # Bucle de video en vivo
+        while True:
+            ret, frame = CAP.read()
+            if not ret:
+                print("Error al leer fotograma.")
+                continue
 
-        # Convertir a imagen de color para dibujar los puntos
-        display_frame = cv2.cvtColor(ir_gray_image, cv2.COLOR_GRAY2BGR) if ir_gray_image.ndim == 2 else ir_gray_image.copy()
+            ir_image_raw = frame[0:thermal_utils.IR_IMAGE_HEIGHT, 0:thermal_utils.IR_IMAGE_WIDTH]
+            display_frame_bgr = get_3_channel_bgr(ir_image_raw)
+            display_frame_with_points = draw_calibration_points(display_frame_bgr)
 
-        # Dibujar los puntos de calibración
-        for i, (x, y) in enumerate(CALIBRATION_POINTS_PIXEL_COORDS):
-            cv2.circle(display_frame, (x, y), 5, (0, 255, 0), -1) # Círculo verde
-            cv2.putText(display_frame, f"P{i+1}", (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-        # Mostrar el frame
-        cv2.imshow('Calibracion de Camara Termica', display_frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('s'):
-            print("\nIngresa las temperaturas medidas por tus termopares para cada punto:")
-            for i in range(4):
-                while True:
-                    try:
-                        temp_str = input(f"Temperatura para el Punto {i+1} (C): ")
-                        measured_temperatures[i] = float(temp_str)
-                        break
-                    except ValueError:
-                        print("Entrada inválida. Por favor, ingresa un número.")
-
-            # Guardar los datos de calibración
-            calibration_data = {
-                "pixel_coords": CALIBRATION_POINTS_PIXEL_COORDS.tolist(),
-                "measured_temps": measured_temperatures
-            }
-            with open(thermal_utils.CALIBRATION_FILE, 'w') as f:
-                json.dump(calibration_data, f, indent=4)
-            print(f"Datos de calibración guardados en {thermal_utils.CALIBRATION_FILE}")
+            cv2.imshow('Video en Vivo - Presiona "s" para capturar', display_frame_with_points)
             
-            # Recargar los datos de calibración en thermal_utils para que estén disponibles
-            thermal_utils.load_calibration_data()
-            print("Calibración completada y guardada.")
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('s'):
+                # Capturamos la imagen en escala de grises de 1 canal para la lógica
+                captured_ir_gray_image = get_1_channel_gray(ir_image_raw)
+                print("\n¡Imagen congelada! Ahora introduce las temperaturas en la consola.")
+                break
+            elif key == ord('q'):
+                break
+        
+        # Si se presionó 'q', salir del bucle principal
+        if captured_ir_gray_image is None:
             break
-        elif key == ord('q'):
-            print("Saliendo sin guardar la calibración.")
-            break
+
+        # Convertimos la imagen gris capturada a BGR para mostrarla congelada
+        frozen_display_frame = get_3_channel_bgr(captured_ir_gray_image)
+        frozen_display_frame_with_points = draw_calibration_points(frozen_display_frame)
+        cv2.imshow('Video en Vivo - Presiona "s" para capturar', frozen_display_frame_with_points)
+        cv2.waitKey(1)
+
+        # Pedir los datos al usuario mientras ve la imagen congelada
+        measured_temperatures = []
+        for i in range(len(thermal_utils.CALIBRATION_POINTS_PIXEL_COORDS)):
+            while True:
+                try:
+                    # Se mantiene mostrando la imagen congelada mientras espera el input
+                    cv2.imshow('Video en Vivo - Presiona "s" para capturar', frozen_display_frame_with_points)
+                    cv2.waitKey(1)
+                    temp_str = input(f"  -> Temperatura para Punto {i+1} (C): ")
+                    measured_temperatures.append(float(temp_str))
+                    break
+                except ValueError:
+                    print("   Entrada inválida. Por favor, introduce un número (ej: 25.4).")
+
+        pixel_values_at_points = np.array([captured_ir_gray_image[y, x] for x, y in thermal_utils.CALIBRATION_POINTS_PIXEL_COORDS])
+
+        sample_data = {
+            "coords": thermal_utils.CALIBRATION_POINTS_PIXEL_COORDS,
+            "values": pixel_values_at_points,
+            "temps": measured_temperatures
+        }
+        collected_samples.append(sample_data)
+        print("\n¡Muestra añadida con éxito! Volviendo al video en vivo...")
+
+    # Una vez que el usuario ha terminado (presionando 'q' en el bucle de video)
+    cv2.destroyAllWindows()
+    
+    if collected_samples:
+        print(f"\nSe han recolectado {len(collected_samples)} muestra(s).")
+        print("Guardando los nuevos datos de calibración...")
+        thermal_utils.clear_calibration_data()
+        for sample in collected_samples:
+            thermal_utils.add_calibration_sample(
+                sample["coords"],
+                sample["values"],
+                sample["temps"]
+            )
+        print("\n¡Calibración inicial completada y guardada en 'calibration_data.json'!")
+        print("Ahora puedes ejecutar 'app.py' para iniciar el monitor web.")
+    else:
+        print("\nNo se capturaron muestras. Saliendo sin cambios.")
 
     CAP.release()
-    cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    capture_and_display()
+    capture_calibration_samples()
