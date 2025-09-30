@@ -5,13 +5,18 @@ import numpy as np
 import time
 import os
 import thermal_utils
+from threading import Thread, Lock
 
 # --- Configuración del Servidor Flask ---
 app = Flask(__name__)
 
 # --- Configuración de la Cámara ---
-CAMERA_INDEX = 2
-CAP = None
+CAMERA_INDEX = 0
+# --- Variables globales para el threading de la cámara ---
+camera_thread = None
+output_frame = None
+lock = Lock()
+
 # --- Estado de la UI ---
 SHOW_CALIBRATION_POINTS = False
 
@@ -22,46 +27,52 @@ last_save_time = 0
 # --- FACTOR DE ESCALADO PARA EL STREAMING ---
 STREAM_SCALE_FACTOR = 2.5
 
-def init_camera():
-    global CAP
-    if CAP is None or not CAP.isOpened():
-        print(f"Intentando abrir la cámara con índice {CAMERA_INDEX}...")
-        CAP = cv2.VideoCapture(CAMERA_INDEX)
-        if not CAP.isOpened():
-            print("Error: No se pudo abrir la cámara.")
-            return False
-        print("Cámara abierta correctamente.")
-    return True
 
-def generate_frames():
-    global last_save_time
-    if not init_camera():
-        # Generar un frame de error si la cámara no se abre
-        error_img = np.zeros((thermal_utils.IR_IMAGE_HEIGHT, thermal_utils.IR_IMAGE_WIDTH, 3), dtype=np.uint8)
-        cv2.putText(error_img, "CAM ERROR", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        ret, buffer = cv2.imencode('.jpg', error_img)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+# --- HILO DEDICADO A LA CAPTURA DE LA CÁMARA ---
+def camera_capture_thread():
+    global output_frame
+    
+    print(f"Intentando abrir la cámara con índice {CAMERA_INDEX}...")
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        print("Error: No se pudo abrir la cámara en el hilo.")
         return
+    print("Cámara abierta correctamente en el hilo.")
 
     while True:
-        ret, frame = CAP.read()
+        ret, frame = cap.read()
         if not ret:
-            print("Error al leer el fotograma. Reconectando...")
-            CAP.release()
-            init_camera()
-            time.sleep(1)
+            print("Error al leer el fotograma en el hilo. Saliendo del hilo de captura.")
+            break
+        
+        # Usamos un Lock para asegurar que el fotograma se escriba de forma segura
+        with lock:
+            output_frame = frame.copy()
+    
+    cap.release()
+    print("Hilo de cámara terminado y cámara liberada.")
+
+# --- FUNCIÓN PRINCIPAL DE GENERACIÓN DE FRAMES (AHORA MÁS LIGERA) ---
+def generate_frames():
+    global last_save_time, output_frame
+
+    while True:
+        # Esperar hasta que el primer fotograma esté disponible
+        if output_frame is None:
+            time.sleep(0.1)
             continue
+
+        with lock:
+            # Hacemos una copia para procesar y evitar problemas de concurrencia
+            frame = output_frame.copy()
 
         ir_gray_image = frame[0:thermal_utils.IR_IMAGE_HEIGHT, 0:thermal_utils.IR_IMAGE_WIDTH]
         temperature_matrix = thermal_utils.calculate_temperature_matrix(ir_gray_image)
         min_temp_detected = np.min(temperature_matrix)
         max_temp_detected = np.max(temperature_matrix)
-
+        
         colored_display_frame = thermal_utils.apply_rainbow_colormap(
-            temperature_matrix,
-            vmin=thermal_utils.MIN_TEMP_C,
-            vmax=thermal_utils.MAX_TEMP_C
+            temperature_matrix, vmin=min_temp_detected, vmax=max_temp_detected
         )
 
         text_min = f"Min: {min_temp_detected:.1f}C"
@@ -69,7 +80,6 @@ def generate_frames():
         cv2.putText(colored_display_frame, text_min, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(colored_display_frame, text_max, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # Dibujar puntos de calibración si está activado
         if SHOW_CALIBRATION_POINTS:
             for i, (x, y) in enumerate(thermal_utils.CALIBRATION_POINTS_PIXEL_COORDS):
                 cv2.circle(colored_display_frame, (x, y), 5, (0, 255, 0), -1)
@@ -77,7 +87,8 @@ def generate_frames():
 
         new_width = int(colored_display_frame.shape[1] * STREAM_SCALE_FACTOR)
         new_height = int(colored_display_frame.shape[0] * STREAM_SCALE_FACTOR)
-        resized_frame = cv2.resize(colored_display_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        # Usamos INTER_NEAREST que es más rápido y adecuado para imágenes térmicas
+        resized_frame = cv2.resize(colored_display_frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
 
         current_time = time.time()
         if current_time - last_save_time > SAVE_INTERVAL_SECONDS:
@@ -89,7 +100,7 @@ def generate_frames():
         frame_bytes = buffer.tobytes()
 
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        time.sleep(0.03)
+        time.sleep(0.03) # Pequeña pausa para no sobrecargar la CPU
 
 @app.route('/')
 def index():
@@ -99,10 +110,10 @@ def index():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+# --- Rutas de descarga y API (SIN CAMBIOS) ---
 @app.route('/download_data')
 def download_data():
     files_list = []
-    # Usar try-except para evitar errores si las carpetas no existen
     try:
         for f in sorted(os.listdir(thermal_utils.DATASETS_FOLDER), key=lambda x: os.path.getmtime(os.path.join(thermal_utils.DATASETS_FOLDER, x)), reverse=True):
             if f.endswith('.h5'):
@@ -126,8 +137,6 @@ def serve_dataset(filename):
 def serve_image(filename):
     return send_from_directory(thermal_utils.THERMAL_IMAGES_FOLDER, filename)
 
-# --- NUEVAS RUTAS API PARA CALIBRACIÓN ---
-
 @app.route('/api/calibration_status', methods=['GET'])
 def get_calibration_status():
     if thermal_utils.CALIBRATION_MODEL is not None:
@@ -144,18 +153,18 @@ def toggle_markers():
 
 @app.route('/api/add_calibration_sample', methods=['POST'])
 def add_sample_from_web():
+    global output_frame
     data = request.get_json()
     if not data or 'temps' not in data or len(data['temps']) != 4:
         return jsonify({"status": "error", "message": "Datos inválidos. Se esperan 4 temperaturas."}), 400
     
     measured_temps = [float(t) for t in data['temps']]
 
-    if not init_camera():
+    if output_frame is None:
         return jsonify({"status": "error", "message": "No se pudo acceder a la cámara."}), 500
 
-    ret, frame = CAP.read()
-    if not ret:
-        return jsonify({"status": "error", "message": "No se pudo capturar un fotograma."}), 500
+    with lock:
+        frame = output_frame.copy()
     
     ir_gray_image = frame[0:thermal_utils.IR_IMAGE_HEIGHT, 0:thermal_utils.IR_IMAGE_WIDTH]
     
@@ -171,7 +180,6 @@ def add_sample_from_web():
         pixel_values,
         measured_temps
     )
-
     if success:
         return jsonify({"status": "success", "message": "Muestra de calibración añadida correctamente."})
     else:
@@ -184,15 +192,13 @@ def clear_calibration_from_web():
     else:
         return jsonify({"status": "error", "message": "Error al eliminar los datos de calibración."}), 500
 
-
-@app.teardown_appcontext
-def shutdown_camera(exception=None):
-    global CAP
-    if CAP is not None and CAP.isOpened():
-        CAP.release()
-        print("Cámara liberada al apagar la aplicación.")
+# --- SE ELIMINÓ LA FUNCIÓN @app.teardown_appcontext ---
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
-
+    # --- Iniciar el hilo de la cámara ---
+    camera_thread = Thread(target=camera_capture_thread)
+    camera_thread.daemon = True
+    camera_thread.start()
     
+    # Iniciar el servidor Flask
+    app.run(host='0.0.0.0', port=5000, debug=False)

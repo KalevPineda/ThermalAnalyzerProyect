@@ -34,9 +34,13 @@ CALIBRATION_POINTS_PIXEL_COORDS = np.array([
 ], dtype=int)
 
 # --- Variables Globales de Calibración NUC ---
-ALL_CALIBRATION_SAMPLES = []  # Lista para almacenar todas las muestras de calibración
-CALIBRATION_MODEL = None      # Almacenará los coeficientes del modelo polinomial
-CALIBRATION_DEGREE = 2        # Grado del polinomio para la calibración NUC
+ALL_CALIBRATION_SAMPLES = []
+CALIBRATION_MODEL = None
+CALIBRATION_DEGREE = 2
+
+# --- OPTIMIZACIÓN: Definimos el colormap una sola vez al iniciar ---
+CMAP = plt.get_cmap('jet')
+
 
 def perform_nuc_calibration():
     """
@@ -52,19 +56,16 @@ def perform_nuc_calibration():
     all_pixel_values = []
     all_measured_temps = []
 
-    # Recopilar todos los puntos de todas las muestras
     for sample in ALL_CALIBRATION_SAMPLES:
         all_pixel_values.extend(sample['pixel_values'])
         all_measured_temps.extend(sample['measured_temps'])
 
-    # Se necesita al menos (grado + 1) puntos para el ajuste
     if len(all_pixel_values) < CALIBRATION_DEGREE + 1:
         print(f"No hay suficientes puntos ({len(all_pixel_values)}) para una calibración de grado {CALIBRATION_DEGREE}. Se necesitan al menos {CALIBRATION_DEGREE + 1}.")
         CALIBRATION_MODEL = None
         return
 
     try:
-        # np.polyfit devuelve [p_n, p_{n-1}, ..., p_0] para p(x) = p_n*x^n + ... + p_0
         model = np.polyfit(all_pixel_values, all_measured_temps, CALIBRATION_DEGREE)
         CALIBRATION_MODEL = model
         print(f"Calibración NUC (polinomial grado {CALIBRATION_DEGREE}) completada con {len(ALL_CALIBRATION_SAMPLES)} muestra(s) y {len(all_pixel_values)} puntos.")
@@ -82,7 +83,6 @@ def load_calibration_data():
         try:
             with open(CALIBRATION_FILE, 'r') as f:
                 data = json.load(f)
-                # La nueva estructura es una lista de muestras bajo la clave "samples"
                 ALL_CALIBRATION_SAMPLES = data.get('samples', [])
             print(f"Cargadas {len(ALL_CALIBRATION_SAMPLES)} muestras de calibración desde {CALIBRATION_FILE}")
             perform_nuc_calibration()
@@ -108,17 +108,15 @@ def add_calibration_sample(pixel_coords, pixel_values, measured_temps):
     }
     ALL_CALIBRATION_SAMPLES.append(new_sample)
     
-    # Guardar todas las muestras en el archivo
     try:
         with open(CALIBRATION_FILE, 'w') as f:
             json.dump({"samples": ALL_CALIBRATION_SAMPLES}, f, indent=4)
         print(f"Nueva muestra de calibración añadida. Total: {len(ALL_CALIBRATION_SAMPLES)}.")
-        # Recalcular el modelo con la nueva información
         perform_nuc_calibration()
         return True
     except Exception as e:
         print(f"Error al guardar la nueva muestra de calibración: {e}")
-        ALL_CALIBRATION_SAMPLES.pop() # Revertir si falla el guardado
+        ALL_CALIBRATION_SAMPLES.pop()
         return False
 
 def clear_calibration_data():
@@ -139,14 +137,11 @@ def clear_calibration_data():
     print("Todos los datos de calibración han sido eliminados.")
     return True
 
-
-# Cargar datos al iniciar
 load_calibration_data()
 
 def calculate_temperature_matrix(ir_gray_image_8bit):
     """
     Calcula la matriz de temperatura a partir de una imagen IR.
-    Utiliza el modelo de calibración NUC si está disponible, si no, una escala lineal.
     """
     if ir_gray_image_8bit.ndim == 3:
         ir_gray_1_channel = ir_gray_image_8bit[:, :, 0]
@@ -156,24 +151,28 @@ def calculate_temperature_matrix(ir_gray_image_8bit):
     pixel_values_float = ir_gray_1_channel.astype(np.float32)
 
     if CALIBRATION_MODEL is not None:
-        # Aplicar el modelo polinomial (NUC)
         temperature_matrix = np.polyval(CALIBRATION_MODEL, pixel_values_float)
     else:
-        # Fallback: Usar la fórmula lineal por defecto si no hay calibración
         temperature_matrix = MIN_TEMP_C + (pixel_values_float / 255.0) * (MAX_TEMP_C - MIN_TEMP_C)
 
-    # Asegurar que los valores queden dentro del rango global
     temperature_matrix = np.clip(temperature_matrix, MIN_TEMP_C, MAX_TEMP_C)
     return temperature_matrix
 
-# --- El resto de las funciones de utilidad permanecen sin cambios significativos ---
+def apply_rainbow_colormap(temperature_matrix, vmin, vmax):
+    """
+    Aplica el colormap 'jet' a una matriz de temperatura usando un rango dinámico.
+    """
+    if vmax - vmin < 0.1:
+        vmax = vmin + 0.1
 
-def apply_rainbow_colormap(temperature_matrix, vmin=MIN_TEMP_C, vmax=MAX_TEMP_C):
     normalized_temp = np.clip((temperature_matrix - vmin) / (vmax - vmin), 0, 1)
     normalized_temp_uint8 = (normalized_temp * 255).astype(np.uint8)
-    cmap = plt.get_cmap('jet')
-    colored_image_rgba = cmap(normalized_temp_uint8)
+    
+    # --- MODIFICACIÓN: Usamos la variable global CMAP ---
+    colored_image_rgba = CMAP(normalized_temp_uint8)
+    
     colored_image_bgr = cv2.cvtColor((colored_image_rgba[:, :, :3] * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    
     return colored_image_bgr
 
 def save_data_as_dataset(temperature_matrix, ir_gray_image):
@@ -201,11 +200,13 @@ def save_img(ir_gray_image, min_temp_detected=None, max_temp_detected=None):
     cv2.imwrite(gray_filename, gray_output_image)
     
     temperature_matrix = calculate_temperature_matrix(ir_gray_image)
-    if min_temp_detected is None: min_temp_detected = np.min(temperature_matrix)
-    if max_temp_detected is None: max_temp_detected = np.max(temperature_matrix)
-    colored_image = apply_rainbow_colormap(temperature_matrix, vmin=MIN_TEMP_C, vmax=MAX_TEMP_C)
-    min_temp_str = f"{min_temp_detected:.1f}".replace('.', '_')
-    max_temp_str = f"{max_temp_detected:.1f}".replace('.', '_')
+    min_val = np.min(temperature_matrix) if min_temp_detected is None else min_temp_detected
+    max_val = np.max(temperature_matrix) if max_temp_detected is None else max_temp_detected
+
+    colored_image = apply_rainbow_colormap(temperature_matrix, vmin=min_val, vmax=max_val)
+    
+    min_temp_str = f"{min_val:.1f}".replace('.', '_')
+    max_temp_str = f"{max_val:.1f}".replace('.', '_')
     colored_filename = os.path.join(THERMAL_IMAGES_FOLDER, f"ir_rainbow_{timestamp}_min{min_temp_str}_max{max_temp_str}.jpeg")
     cv2.imwrite(colored_filename, colored_image)
     print(f"Imágenes guardadas: {gray_filename}, {colored_filename}")
